@@ -1,56 +1,73 @@
 class Node:
-    sentinel = None
-    def __init__(self, key, value):
+    def __init__(self, key, value, left, right, level):
         self.key = key
         self.value = value
-        self.right = Node.sentinel
-        self.left = Node.sentinel
-        self.level = 1
+        self._right = right
+        self._left = left
+        self.level = level
+        self.size = 1
 
-Node.sentinel = Node(None, None)
-Node.sentinel.level = 0
+    def _update_size(self):
+        self.size = 1 + self._left.size + self._right.size
+
+    def set_left(self, left):
+        self._left = left
+        self._update_size()
+
+    def set_right(self, right):
+        self._right = right
+        self._update_size()
+
+    def left(self):
+        return self._left
+
+    def right(self):
+        return self._right
+
+Node.sentinel = Node(None, None, None, None, 0)
+Node.sentinel.size = 0
 
 class AATree:
     def __init__(self):
         self._root = Node.sentinel
 
     def _right_rotate(self, node):
-        t = node.left
-        node.left = t.right
-        t.right = node
+        t = node.left()
+        node.set_left(t.right())
+        t.set_right(node)
         return t
 
     def _left_rotate(self, node):
-        t = node.right
-        node.right = t.left
-        t.left = node
+        t = node.right()
+        node.set_right(t.left())
+        t.set_left(node)
         return t
     
     def _skew(self, node):
-        assert type(node) == Node and node is not Node.sentinel
-        if node.left.level == node.level:
+        assert type(node) == Node and node.level > 0
+        if node.left().level == node.level:
             node = self._right_rotate(node)
         return node
     
     def _split(self, node):
-        assert type(node) == Node and node is not Node.sentinel
-        if node.right.right != None and node.level == node.right.level == node.right.right.level:
+        assert type(node) == Node and node.level > 0
+        if node.right().right() != None and node.level == node.right().level == node.right().right().level:
             node = self._left_rotate(node)     
             node.level += 1
         return node
    
     def _set(self, node, key, value):
-        if node is Node.sentinel:
-            return Node(key, value)
+        if node.level == 0:
+            return Node(key, value, Node.sentinel, Node.sentinel, 1)
 
         if key == node.key:
             node.value = value 
             return node
 
         if key < node.key:
-            node.left = self._set(node.left, key, value)
+            node.set_left(self._set(node.left(), key, value))
         else:
-            node.right = self._set(node.right, key, value)
+            node.set_right(self._set(node.right(), key, value))
         
         node = self._skew(node)
         node = self._split(node)
@@ -58,9 +75,9 @@ class AATree:
         return node
     
     def _succecor(self, node):
-        node = node.right
-        while node.left is not Node.sentinel:
-            node = node.left
+        node = node.right()
+        while node.left().level > 0:
+            node = node.left()
         return node
     
     def _swap(self, a, b):
@@ -68,41 +85,44 @@ class AATree:
         a.key, b.key = b.key, a.key
 
     def _remove(self, node, key):
-        if node is Node.sentinel:
-            raise KeyError()
+        if node.level == 0:
+            raise KeyError("%s not found" % key)
+        
+        kid = -1
 
         if key == node.key:
-            if node.right is not Node.sentinel:
+            if node.right().level == 0:
+                return Node.sentinel
+            else:
                 t = self._succecor(node)
                 self._swap(t, node)
-                node.right = self._set(node.right, key, value)
-                return node
-            else:
-                return node.right
-        
-        assert node.level >= 2
+                kid = 1
+         
+        if kid == -1:
+            kid = 0 if key < node.key else 1
 
-        if key < node.key:
-            node.left = self._set(node.left, key, value)
-            if node.left.level < node.level - 1:
-                assert node.left.level == node.level - 2
-
-                node.level -= 1
-                if node.right.level == node.level:
+        if kid == 0:
+            node.set_left(self._remove(node.left(), key))
+            if node.left().level < node.level - 1:
+                assert node.left().level == node.level - 2
+                if node.right().level < node.level:
+                    node.level -= 1
                     node = self._split(node)
                 else:
-                    assert node.right.level == node.level + 1
-                    node.right.level -= 1
-                    node.right = self._skew(node.right)
-                    node.right.right = self._skew(node.right.right)
+                    node.level -= 1
+                    node.right().level -= 1
+                    node.set_right(self._skew(node.right()))
+                    node.right().set_right(self._skew(node.right().right()))
                     node = self._split(node)
-                    node.right = self._split(node.right)
+                    node.set_right(self._split(node.right()))
         else:
-            node.right = self._set(node.right, key, value)
-            if node.right.level < node.level - 1:
-                assert node.right.level == node.level - 2
+            node.set_right(self._remove(node.right(), key))
+            if node.right().level < node.level - 1:
+                assert node.right().level == node.level - 2
                 node.level -= 1
                 node = self._skew(node)
+                node.set_right(self._skew(node.right()))
+                node = self._split(node)
         
         return node 
 
@@ -113,49 +133,33 @@ class AATree:
         self._root = self._remove(self._root, key)
     
     def _show(self, node, s):
-        if node is not Node.sentinel:
-            self._show(node.right, s + 1)
-            print(s * '\t', (node.key, node.value))
-            self._show(node.left, s + 1)
+        if node.level > 0:
+            self._show(node.right(), s + 1)
+            print(s * '\t', (node.key, node.level))
+            self._show(node.left(), s + 1)
+
+    def _keys(self, node):
+        if node.level == 0:
+            return []
+        else:
+            return self._keys(node.left()) + [node.key] + self._keys(node.right())
+    
+    def keys(self):
+        return self._keys(self._root)
 
     def show(self):
         self._show(self._root, 0)
-
+    
     def get(self, key):
         node = self._root
         while node != Node.sentinel:
             if key == node.key:
                 return node.value
             elif key < node.key:
-                node = node.left
+                node = node.left()
             else:
-                node = node.right
+                node = node.right()
         raise KeyError("%s not found" % key)
-
-if __name__ == '__main__':
-    from random import random
-    t = AATree()
-    d = {}
-    for i in range(1000):
-        key = random()
-        value = random()
-        d[key] = value
-        t.set(key, value)
     
-    print(len(d))
-
-    for key in d:
-        assert d[key] == t.get(key)
-    
-    while len(d) > 0:
-        k, _ = d.popitem()
-        t.remove(k)
-        for key in d:
-            assert d[key] == t.get(key)
-        '''
-        print('remove', k)
-        print('-' * 50)
-        t.show()
-        '''
-
-
+    def __len__(self):
+        return self._root.size
