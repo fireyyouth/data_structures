@@ -43,5 +43,16 @@ class IndexListTest(unittest.TestCase):
             a.remove(1)
 
         a.remove(0)
+    
+    def test_iteration(self):
+        a = IndexList()
+        b = []
+        for i in range(1000):
+            a.insert(len(a), i)
+            b.append(i)
+
+        for x, y in zip(a, b):
+            self.assertEqual(x, y)
+
 
 unittest.main()

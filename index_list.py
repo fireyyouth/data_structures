@@ -26,6 +26,28 @@ class Node:
 Node.sentinel = Node(None, None, None, 0)
 Node.sentinel.size = 0
 
+class TreeIter:
+    def __init__(self, node):
+        self.stack = [(node, 0)]
+        self.prev = -1
+    
+    def __next__(self):
+        while True:
+            if self.stack[-1][0].level == 0 or self.prev == 1:
+                node, edge = self.stack.pop()
+                if len(self.stack) == 0:
+                    raise StopIteration
+                self.prev = edge
+            elif self.prev == 0:
+                ans = self.stack[-1][0].value
+                self.stack.append((self.stack[-1][0].right(), 1))
+                self.prev = -1
+                return ans
+            else:
+                self.stack.append((self.stack[-1][0].left(), 0))
+        return ans
+           
+            
 class IndexList:
     def __init__(self):
         self._root = Node.sentinel
@@ -163,3 +185,6 @@ class IndexList:
     
     def __len__(self):
         return self._root.size
+
+    def __iter__(self):
+        return TreeIter(self._root)
