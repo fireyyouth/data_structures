@@ -81,6 +81,69 @@ struct CHAMT {
         }
     }
 
+    static NodePtr remove(NodePtr p, const T & data) {
+        size_t hashcode = Hasher()(data);
+        size_t level = 0;
+        struct Frame {
+            const Node *node;
+            size_t bits;
+            Frame(const Node *n, size_t b) : node(n), bits(b) {}
+        };
+        std::vector<Frame> stack;
+        bool removed = false;
+        while (1) {
+            size_t bits = gitBits(hashcode, level);
+            stack.emplace_back(p.get(), bits);
+            auto vp = p->get(bits);
+            if (vp) {
+                if (vp->index() == INDEX_LEAF) {
+                    if (data == *(std::get<INDEX_LEAF>(*vp))) {
+                        removed = true;
+                        break;
+                    }
+                } else {
+                    p = std::get<INDEX_NODE>(*vp);
+                }
+            } else {
+                break;
+            }
+            ++level;
+            if (level % PERIOD == 0) {
+                hashcode = Rehasher()(data, level);
+            }
+        }
+
+        if (removed) {
+            const auto & back = stack.back();
+            size_t index = back.node->InnerIndex(back.bits);
+            if (stack.size() > 1 && back.node->elements.size() == 2 && back.node->elements[1 - index].index() == INDEX_LEAF) {
+                auto t = back.node->elements[1 - index];
+                stack.pop_back();
+                while (stack.size() > 1 && stack.back().node->elements.size() == 1) {
+                    stack.pop_back();
+                }
+                auto elements = stack.back().node->elements;
+                elements[stack.back().node->InnerIndex(stack.back().bits)] = t;
+                p = std::make_shared<const Node>(stack.back().node->bitmap, std::move(elements));
+                stack.pop_back();
+            } else {
+                std::vector< VariantPtr > elements(back.node->elements.size() - 1);
+                std::copy(back.node->elements.begin(), back.node->elements.begin() + index, elements.begin());
+                std::copy(back.node->elements.begin() + index + 1, back.node->elements.end(), elements.begin() + index);
+                p = std::make_shared<const Node>(back.node->bitmap & ~(Node::lshift(back.bits)), std::move(elements));
+                stack.pop_back();
+            }
+            while (!stack.empty()) {
+                auto elements = stack.back().node->elements;
+                elements[stack.back().node->InnerIndex(stack.back().bits)] = p;
+                p = std::make_shared<const Node>(stack.back().node->bitmap, std::move(elements));
+                stack.pop_back();
+            }
+        }
+
+        return p;
+    }
+
 
     static NodePtr merge(LeafPtr a, size_t hash_a, LeafPtr b, size_t hash_b, size_t level) {
         size_t bits_a = gitBits(hash_a, level);
@@ -227,19 +290,39 @@ void print_hash_bits(const std::string & s) {
     std::cout << std::endl;
 }
 
+#define FOO 0
+
 int main() {
     auto p = StringSet::create();
-    for (int i = 0; i < 128; ++i) {
+
+#if FOO
+    for (int i = 0; i < 64; ++i) {
+        p = StringSet::insert(p, std::to_string(i));
+    }
+    for (int i = 0; i < 64; ++i) {
+        if (i % 2 == 0) {
+            p = StringSet::remove(p, std::to_string(i));
+        }
+    }
+
+#else
+    for (int i = 0; i < 64; ++i) {
         if (i % 2) {
             p = StringSet::insert(p, std::to_string(i));
         }
     }
-
-    for (int i = 0; i < 128; ++i) {
+#endif
+    /*
+    for (int i = 0; i < 64; ++i) {
         if( StringSet::find(p, std::to_string(i)) != (i % 2) ) {
-            std::cout << i << std::endl;
+            std::cerr << i << std::endl;
         }
     }
+
+    p = StringSet::remove(p, std::to_string(43));
+    */
+    // p = StringSet::remove(p, std::to_string(51));
+
 
     // std::cerr << StringSet::find(p, std::to_string(51));
     /*
@@ -247,6 +330,6 @@ int main() {
     print_hash_bits(std::to_string(43));
     print_hash_bits(std::to_string(51));
     */
-    // StringSet::toDot(p, std::cout);
+    StringSet::toDot(p, std::cout);
 
 }
