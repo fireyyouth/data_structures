@@ -6,15 +6,18 @@
 #include <iostream>
 #include <sstream>
 
-    static const size_t PERIOD = sizeof(size_t) * 8 / 6;
+struct HAMTBase {
+    static const size_t PERIOD;
 
-
-    static inline size_t gitBits(size_t hashcode,  size_t level) {
+    static inline size_t getBits(size_t hashcode,  size_t level) {
         return (hashcode >> (6 * (level % PERIOD))) & 63;
     }
+};
 
-template <typename T, typename Rehasher, typename Hasher = std::hash<T>>
-struct CHAMT {
+const size_t HAMTBase::PERIOD = sizeof(size_t) * 8 / 6;
+
+template <typename T, typename Comp, typename Hasher, typename Rehasher>
+struct CHAMT : public HAMTBase {
     struct Node;
     using Leaf = T;
     using LeafPtr = std::shared_ptr<const Leaf>;
@@ -24,10 +27,6 @@ struct CHAMT {
         INDEX_NODE = 1
     };
     using VariantPtr = std::variant<LeafPtr, NodePtr>; // order is important
-
-
-    static Hasher hasher;
-    static Rehasher rehasher;
 
     struct Node {
         uint64_t bitmap;
@@ -59,20 +58,24 @@ struct CHAMT {
         return std::make_shared<Node>();
     }
 
-    static bool find(NodePtr p, const T & data) {
+    static std::optional<LeafPtr> find(NodePtr p, const T & data) {
         size_t hashcode = Hasher()(data);
         size_t level = 0;
         while (1) {
-            size_t bits = gitBits(hashcode, level);
+            size_t bits = getBits(hashcode, level);
             auto vp = p->get(bits);
             if (vp) {
                 if (vp->index() == INDEX_LEAF) {
-                    return data == *(std::get<INDEX_LEAF>(*vp));
+                    if (Comp()(data, *(std::get<INDEX_LEAF>(*vp)))) {
+                        return std::get<INDEX_LEAF>(*vp);
+                    } else {
+                        return std::nullopt;
+                    }
                 } else {
                     p = std::get<INDEX_NODE>(*vp);
                 }
             } else {
-                return false;
+                return std::nullopt;
             }
             ++level;
             if (level % PERIOD == 0) {
@@ -81,9 +84,7 @@ struct CHAMT {
         }
     }
 
-    static NodePtr remove(NodePtr p, const T & data) {
-        size_t hashcode = Hasher()(data);
-        size_t level = 0;
+    static NodePtr remove(NodePtr root, const T & data) {
         struct Frame {
             const Node *node;
             size_t bits;
@@ -91,31 +92,41 @@ struct CHAMT {
         };
         std::vector<Frame> stack;
         bool removed = false;
-        while (1) {
-            size_t bits = gitBits(hashcode, level);
-            stack.emplace_back(p.get(), bits);
-            auto vp = p->get(bits);
-            if (vp) {
-                if (vp->index() == INDEX_LEAF) {
-                    if (data == *(std::get<INDEX_LEAF>(*vp))) {
-                        removed = true;
-                        break;
+
+        // search
+        {
+            size_t hashcode = Hasher()(data);
+            size_t level = 0;
+            auto p = root;
+            while (1) {
+                size_t bits = getBits(hashcode, level);
+                stack.emplace_back(p.get(), bits);
+                auto vp = p->get(bits);
+                if (vp) {
+                    if (vp->index() == INDEX_LEAF) {
+                        if (Comp()(data, *(std::get<INDEX_LEAF>(*vp)))) {
+                            removed = true;
+                            break;
+                        }
+                    } else {
+                        p = std::get<INDEX_NODE>(*vp);
                     }
                 } else {
-                    p = std::get<INDEX_NODE>(*vp);
+                    break;
                 }
-            } else {
-                break;
-            }
-            ++level;
-            if (level % PERIOD == 0) {
-                hashcode = Rehasher()(data, level);
+                ++level;
+                if (level % PERIOD == 0) {
+                    hashcode = Rehasher()(data, level);
+                }
             }
         }
 
-        if (removed) {
+        if (!removed) {
+            return root;
+        } else {
             const auto & back = stack.back();
             size_t index = back.node->InnerIndex(back.bits);
+            NodePtr p;
             if (stack.size() > 1 && back.node->elements.size() == 2 && back.node->elements[1 - index].index() == INDEX_LEAF) {
                 auto t = back.node->elements[1 - index];
                 stack.pop_back();
@@ -139,18 +150,22 @@ struct CHAMT {
                 p = std::make_shared<const Node>(stack.back().node->bitmap, std::move(elements));
                 stack.pop_back();
             }
+            return p;
         }
 
-        return p;
     }
 
 
     static NodePtr merge(LeafPtr a, size_t hash_a, LeafPtr b, size_t hash_b, size_t level) {
-        size_t bits_a = gitBits(hash_a, level);
-        size_t bits_b = gitBits(hash_b, level);
+        size_t bits_a = getBits(hash_a, level);
+        size_t bits_b = getBits(hash_b, level);
         if (bits_a == bits_b) {
             if ((level + 1) % PERIOD == 0) {
-                throw std::runtime_error("rehash not ready!");
+                hash_a = Rehasher()(*a, level + 1);
+                hash_b = Rehasher()(*b, level + 1);
+                if (hash_a == hash_b) {
+                    throw std::runtime_error("your rehasher sucks!");
+                }
             }
             auto p = merge(a, hash_a, b, hash_b, level + 1);
             std::vector< VariantPtr > elements = {p,};
@@ -166,7 +181,7 @@ struct CHAMT {
     }
 
     static NodePtr insert(NodePtr root, const T & data, size_t hashcode, size_t level) {
-        size_t bits = gitBits(hashcode, level);
+        size_t bits = getBits(hashcode, level);
         auto vp = root->get(bits);
         if (!vp) {
             size_t cnt = root->InnerIndex(bits);
@@ -178,7 +193,8 @@ struct CHAMT {
         } else {
             if (vp->index() == INDEX_NODE) {
                 if ((level + 1) % PERIOD == 0) {
-                    throw std::runtime_error("rehash not ready!");
+                    hashcode = Rehasher()(data, level + 1);
+                    // throw std::runtime_error("rehash not ready!");
                 }
                 auto p = insert(std::get<INDEX_NODE>(*vp), data, hashcode, level + 1);
                 if (p != std::get<INDEX_NODE>(*vp)) {
@@ -190,11 +206,12 @@ struct CHAMT {
                 }
             } else {
                 auto leaf = std::get<INDEX_LEAF>(*vp);
-                if (data == *leaf) {
+                if (Comp()(data, *leaf)) {
                     return root;
                 } else {
                     if ((level + 1) % PERIOD == 0) {
-                        throw std::runtime_error("rehash not ready!");
+                        hashcode = Rehasher()(data, level + 1);
+                        // throw std::runtime_error("rehash not ready!");
                     }
                     auto p = merge(leaf, Hasher()(*leaf), std::make_shared<Leaf>(data), hashcode, level + 1);
                     std::vector< VariantPtr > elements(root->elements);
@@ -258,7 +275,58 @@ struct CHAMT {
     }
 };
 
-#include <string>
+
+
+template <typename K, typename V, typename Comp, typename Hasher, typename Rehasher>
+struct ImmutableMap {
+    using Pair = std::pair<K, V>;
+    struct PairComp {
+        bool operator()(const Pair & a, const Pair & b) {
+            return Comp()(a.first, b.first);
+        }
+    };
+    struct PairHasher {
+        size_t operator()(const Pair & pair) {
+            return Hasher()(pair.first);
+        }
+    };
+    struct PairRehasher {
+        size_t operator()(const Pair & pair, size_t n) {
+            return Rehasher()(pair.first, n);
+        }
+    };
+
+    using PairCHAMP = CHAMT<Pair, PairComp, PairHasher, PairRehasher>;
+    using NodePtr = typename PairCHAMP::NodePtr;
+    using LeafPtr = typename PairCHAMP::LeafPtr;
+
+    static NodePtr create() {
+        return PairCHAMP::create();
+    }
+
+    static std::optional<LeafPtr> find(NodePtr p, const K & key) {
+        return PairCHAMP::find(p, Pair(key, V()));
+    }
+
+    static NodePtr insert(NodePtr p, const K & key, const V & value) {
+        return PairCHAMP::insert(p, Pair(key, value));
+    }
+
+    static NodePtr remove(NodePtr p, const K & key) {
+        return PairCHAMP::remove(p, Pair(key, V()));
+    }
+};
+
+
+struct StringHasher {
+    size_t operator()(const std::string & s) {
+        size_t hash = 0;
+        for (char ch : s) {
+            hash = hash + ch;
+        }
+        return hash;
+    }
+};
 
 struct StringRehasher {
     size_t operator()(const std::string & s, size_t n) {
@@ -270,66 +338,92 @@ struct StringRehasher {
     }
 };
 
+
+void test_immutable_map() {
+    using StringIntMap = ImmutableMap<std::string, int, std::equal_to<std::string>, StringHasher, StringRehasher>;
+    auto p = StringIntMap::create();
+
+    for (int i = 0; i < 64; ++i) {
+        if (i % 2) {
+            p = StringIntMap::insert(p, std::to_string(i), i);
+        }
+    }
+
+    for (int i = 0; i < 64; ++i) {
+        auto result = StringIntMap::find(p, std::to_string(i));
+        if (i % 2) {
+            if (! result ) {
+                std::cerr << __LINE__ << " : " <<  i << std::endl;
+            } else {
+                if ((*result)->second != i) {
+                    std::cerr << __LINE__ << " : " << (*result)->second << " != " <<  i << std::endl;
+                }
+            }
+        } else {
+            if (result) {
+                std::cerr << __LINE__ << " : " <<  i << std::endl;
+            }
+        }
+    }
+
+    for (int i = 0; i < 64; ++i) {
+        if (i % 3 == 0) {
+            p = StringIntMap::remove(p, std::to_string(i));
+        }
+    }
+
+    for (int i = 0; i < 64; ++i) {
+        auto result = StringIntMap::find(p, std::to_string(i));
+        if( (i % 2 && i % 3) ) {
+            if ( ! (result && (*result)->second == i) ) {
+                std::cerr << i << std::endl;
+            }
+        } else {
+            if (result) {
+                std::cerr << i << std::endl;
+            }
+        }
+    }
+}
+
+
+#include <string>
+
+
 struct IntRehasher {
     size_t operator()(int s, size_t n) {
         return std::hash<int>()(s * n);
     }
 };
-
-using IntSet = CHAMT<int, IntRehasher>;
-using StringSet = CHAMT<std::string, StringRehasher>;
-
+/*
+using IntSet = CHAMT<int, std::hash<int>, IntRehasher>;
+using StringSet = CHAMT<std::string, StringHasher, StringRehasher>;
+*/
 #include <map>
 #include <cassert>
 
+template <typename Hasher>
 void print_hash_bits(const std::string & s) {
-    size_t h = std::hash<std::string>()(s);
-    for (size_t i = 0; i < PERIOD; ++i) {
-        std::cout << gitBits(h, i) << ' ';
+    size_t h = Hasher()(s);
+    for (size_t i = 0; i < HAMTBase::PERIOD; ++i) {
+        std::cerr << HAMTBase::getBits(h, i) << ' ';
     }
-    std::cout << std::endl;
+    std::cerr << std::endl;
 }
 
-#define FOO 0
+template <typename Rehasher>
+void print_hash_bits(const std::string & s, size_t n) {
+    size_t h = Rehasher()(s, n);
+    for (size_t i = 0; i < HAMTBase::PERIOD; ++i) {
+        std::cerr << HAMTBase::getBits(h, i) << ' ';
+    }
+    std::cerr << std::endl;
+}
 
 int main() {
-    auto p = StringSet::create();
+    
+    test_immutable_map();
 
-#if FOO
-    for (int i = 0; i < 64; ++i) {
-        p = StringSet::insert(p, std::to_string(i));
-    }
-    for (int i = 0; i < 64; ++i) {
-        if (i % 2 == 0) {
-            p = StringSet::remove(p, std::to_string(i));
-        }
-    }
-
-#else
-    for (int i = 0; i < 64; ++i) {
-        if (i % 2) {
-            p = StringSet::insert(p, std::to_string(i));
-        }
-    }
-#endif
-    /*
-    for (int i = 0; i < 64; ++i) {
-        if( StringSet::find(p, std::to_string(i)) != (i % 2) ) {
-            std::cerr << i << std::endl;
-        }
-    }
-
-    p = StringSet::remove(p, std::to_string(43));
-    */
-    // p = StringSet::remove(p, std::to_string(51));
-
-
-    // std::cerr << StringSet::find(p, std::to_string(51));
-    /*
-    print_hash_bits(std::to_string(5));
-    print_hash_bits(std::to_string(43));
-    print_hash_bits(std::to_string(51));
-    */
-    StringSet::toDot(p, std::cout);
+    // StringSet::toDot(p, std::cout);
 
 }
