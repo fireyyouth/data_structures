@@ -5,18 +5,12 @@
 #include <cstring>
 #include <iostream>
 #include <sstream>
+#include <cassert>
 
-    static const size_t PERIOD = sizeof(size_t) * 8 / 6;
-
-
-    static inline size_t gitBits(size_t hashcode,  size_t level) {
-        return (hashcode >> (6 * (level % PERIOD))) & 63;
-    }
-
-template <typename T, typename Rehasher, typename Hasher = std::hash<T>>
-struct CHAMT {
+template <typename K, typename V, typename Hasher>
+struct HAMTMap {
     struct Node;
-    using Leaf = T;
+    using Leaf = std::pair<K, V>;
     using LeafPtr = std::shared_ptr<const Leaf>;
     using NodePtr = std::shared_ptr<const Node>;
     enum {
@@ -25,11 +19,17 @@ struct CHAMT {
     };
     using VariantPtr = std::variant<LeafPtr, NodePtr>; // order is important
 
+    static const size_t PERIOD = sizeof(size_t) * 8 / 6;
 
-    static Hasher hasher;
-    static Rehasher rehasher;
+    static inline size_t gitBits(size_t hashcode,  size_t level) {
+        return (hashcode >> (6 * (level % PERIOD))) & 63;
+    }
 
-    struct Node {
+    static inline uint64_t lshift(size_t i) {
+        return ((uint64_t)1) << i;
+    }
+
+    struct Node : public std::enable_shared_from_this<Node> {
         uint64_t bitmap;
         std::vector< VariantPtr > elements;
 
@@ -37,19 +37,53 @@ struct CHAMT {
             : bitmap(b), elements(std::move(e)) {}
         Node() : bitmap(0) {}
 
-        static inline uint64_t lshift(size_t i) {
-            return ((uint64_t)1) << i;
-        }
-
         inline size_t InnerIndex(size_t i) const {
             return __builtin_popcountll(bitmap & (lshift(i) - 1));
         }
 
         std::optional< VariantPtr > get(size_t i) const {
+            assert( i < 64 );
             if (lshift(i) & bitmap) {
                 return elements[InnerIndex(i)];
             } else {
                 return std::nullopt;
+            }
+        }
+
+        size_t size() const {
+            return elements.size();
+        }
+
+        NodePtr set(size_t i, VariantPtr kid) const {
+            assert( i < 64 );
+            if (lshift(i) & bitmap) {
+                if (kid != elements[InnerIndex(i)]) {
+                    std::vector< VariantPtr > e(elements);
+                    e[InnerIndex(i)] = kid;
+                    return std::make_shared<Node>(bitmap, std::move(e));
+                } else {
+                    return this->shared_from_this();
+                }
+            } else {
+                size_t cnt = InnerIndex(i);
+                std::vector< VariantPtr > e(elements.size() + 1);
+                std::copy(elements.begin(), elements.begin() + cnt, e.begin());
+                e[cnt] = kid;
+                std::copy(elements.begin() + cnt, elements.end(), e.begin() + cnt + 1);
+                return std::make_shared<Node>(bitmap | lshift(i), std::move(e));
+            }
+        }
+
+        NodePtr clear(size_t i) const {
+            assert( i < 64 );
+            if (lshift(i) & bitmap) {
+                size_t index = InnerIndex(i);
+                std::vector< VariantPtr > e(elements.size() - 1);
+                std::copy(elements.begin(), elements.begin() + index, e.begin());
+                std::copy(elements.begin() + index + 1, elements.end(), e.begin() + index);
+                return std::make_shared<const Node>(bitmap & ~(lshift(i)), std::move(e));
+            } else {
+                return this->shared_from_this();
             }
         }
     };
@@ -59,89 +93,92 @@ struct CHAMT {
         return std::make_shared<Node>();
     }
 
-    static bool find(NodePtr p, const T & data) {
-        size_t hashcode = Hasher()(data);
+    static std::optional<V> find(NodePtr p, const K & key) {
+        size_t hashcode = Hasher()(key, 0);
         size_t level = 0;
         while (1) {
             size_t bits = gitBits(hashcode, level);
             auto vp = p->get(bits);
             if (vp) {
                 if (vp->index() == INDEX_LEAF) {
-                    return data == *(std::get<INDEX_LEAF>(*vp));
-                } else {
-                    p = std::get<INDEX_NODE>(*vp);
-                }
-            } else {
-                return false;
-            }
-            ++level;
-            if (level % PERIOD == 0) {
-                hashcode = Rehasher()(data, level);
-            }
-        }
-    }
-
-    static NodePtr remove(NodePtr p, const T & data) {
-        size_t hashcode = Hasher()(data);
-        size_t level = 0;
-        struct Frame {
-            const Node *node;
-            size_t bits;
-            Frame(const Node *n, size_t b) : node(n), bits(b) {}
-        };
-        std::vector<Frame> stack;
-        bool removed = false;
-        while (1) {
-            size_t bits = gitBits(hashcode, level);
-            stack.emplace_back(p.get(), bits);
-            auto vp = p->get(bits);
-            if (vp) {
-                if (vp->index() == INDEX_LEAF) {
-                    if (data == *(std::get<INDEX_LEAF>(*vp))) {
-                        removed = true;
-                        break;
+                    if (key == std::get<INDEX_LEAF>(*vp)->first) {
+                        return std::get<INDEX_LEAF>(*vp)->second;
+                    } else {
+                        return std::nullopt;
                     }
                 } else {
                     p = std::get<INDEX_NODE>(*vp);
                 }
             } else {
-                break;
+                return std::nullopt;
             }
             ++level;
             if (level % PERIOD == 0) {
-                hashcode = Rehasher()(data, level);
+                hashcode = Hasher()(key, level / PERIOD);
+            }
+        }
+    }
+
+    static NodePtr remove(NodePtr root, const K & key) {
+        struct Frame {
+            NodePtr node;
+            size_t bits;
+            Frame(NodePtr n, size_t b) : node(n), bits(b) {}
+        };
+        std::vector<Frame> stack;
+        bool removed = false;
+
+        {
+            auto p = root;
+            size_t hashcode = Hasher()(key, 0);
+            size_t level = 0;
+            while (1) {
+                size_t bits = gitBits(hashcode, level);
+                stack.emplace_back(p, bits);
+                auto vp = p->get(bits);
+                if (vp) {
+                    if (vp->index() == INDEX_LEAF) {
+                        if (key == std::get<INDEX_LEAF>(*vp)->first) {
+                            removed = true;
+                            break;
+                        }
+                    } else {
+                        p = std::get<INDEX_NODE>(*vp);
+                    }
+                } else {
+                    break;
+                }
+                ++level;
+                if (level % PERIOD == 0) {
+                    hashcode = Hasher()(key, level / PERIOD);
+                }
             }
         }
 
         if (removed) {
-            const auto & back = stack.back();
-            size_t index = back.node->InnerIndex(back.bits);
-            if (stack.size() > 1 && back.node->elements.size() == 2 && back.node->elements[1 - index].index() == INDEX_LEAF) {
-                auto t = back.node->elements[1 - index];
+            NodePtr p;
+            const auto & lastNode = stack.back().node;
+            const auto & lastBits = stack.back().bits;
+            VariantPtr t;
+            if (stack.size() > 1 && lastNode->elements.size() == 2 && (t = lastNode->elements[1 - lastNode->InnerIndex(lastBits)]).index() == INDEX_LEAF) {
                 stack.pop_back();
                 while (stack.size() > 1 && stack.back().node->elements.size() == 1) {
                     stack.pop_back();
                 }
-                auto elements = stack.back().node->elements;
-                elements[stack.back().node->InnerIndex(stack.back().bits)] = t;
-                p = std::make_shared<const Node>(stack.back().node->bitmap, std::move(elements));
+                p = stack.back().node->set(stack.back().bits, t);
                 stack.pop_back();
             } else {
-                std::vector< VariantPtr > elements(back.node->elements.size() - 1);
-                std::copy(back.node->elements.begin(), back.node->elements.begin() + index, elements.begin());
-                std::copy(back.node->elements.begin() + index + 1, back.node->elements.end(), elements.begin() + index);
-                p = std::make_shared<const Node>(back.node->bitmap & ~(Node::lshift(back.bits)), std::move(elements));
+                p = lastNode->clear(lastBits);
                 stack.pop_back();
             }
             while (!stack.empty()) {
-                auto elements = stack.back().node->elements;
-                elements[stack.back().node->InnerIndex(stack.back().bits)] = p;
-                p = std::make_shared<const Node>(stack.back().node->bitmap, std::move(elements));
+                p = stack.back().node->set(stack.back().bits, p);
                 stack.pop_back();
             }
+            return p;
+        } else {
+            return root;
         }
-
-        return p;
     }
 
 
@@ -150,13 +187,14 @@ struct CHAMT {
         size_t bits_b = gitBits(hash_b, level);
         if (bits_a == bits_b) {
             if ((level + 1) % PERIOD == 0) {
-                throw std::runtime_error("rehash not ready!");
+                hash_a = Hasher()(a->first, (level + 1) / PERIOD);
+                hash_b = Hasher()(b->first, (level + 1) / PERIOD);
             }
             auto p = merge(a, hash_a, b, hash_b, level + 1);
             std::vector< VariantPtr > elements = {p,};
-            return std::make_shared<Node>(Node::lshift(bits_a), std::move(elements));
+            return std::make_shared<Node>(lshift(bits_a), std::move(elements));
         } else {
-            uint64_t bitmap = Node::lshift(bits_a) | Node::lshift(bits_b);
+            uint64_t bitmap = lshift(bits_a) | lshift(bits_b);
             if (bits_a < bits_b) {
                 return std::make_shared<Node>(bitmap, std::vector<VariantPtr>{a, b});
             } else {
@@ -165,48 +203,40 @@ struct CHAMT {
         }
     }
 
-    static NodePtr insert(NodePtr root, const T & data, size_t hashcode, size_t level) {
+    static NodePtr insert(NodePtr root, const Leaf & leaf, size_t hashcode, size_t level) {
         size_t bits = gitBits(hashcode, level);
         auto vp = root->get(bits);
         if (!vp) {
-            size_t cnt = root->InnerIndex(bits);
-            std::vector< VariantPtr > elements(root->elements.size() + 1);
-            std::copy(root->elements.begin(), root->elements.begin() + cnt, elements.begin());
-            elements[cnt] = std::make_shared<Leaf>(data);
-            std::copy(root->elements.begin() + cnt, root->elements.end(), elements.begin() + cnt + 1);
-            return std::make_shared<Node>(root->bitmap | Node::lshift(bits), std::move(elements));
+            return root->set(bits, std::make_shared<Leaf>(leaf));
         } else {
             if (vp->index() == INDEX_NODE) {
                 if ((level + 1) % PERIOD == 0) {
-                    throw std::runtime_error("rehash not ready!");
+                    hashcode = Hasher()(leaf.first, (level + 1) / PERIOD);
                 }
-                auto p = insert(std::get<INDEX_NODE>(*vp), data, hashcode, level + 1);
-                if (p != std::get<INDEX_NODE>(*vp)) {
-                    std::vector< VariantPtr > elements(root->elements);
-                    elements[root->InnerIndex(bits)] = p;
-                    return std::make_shared<Node>(root->bitmap, std::move(elements));
-                } else {
-                    return root;
-                }
+                auto p = insert(std::get<INDEX_NODE>(*vp), leaf, hashcode, level + 1);
+                return root->set(bits, p);
             } else {
-                auto leaf = std::get<INDEX_LEAF>(*vp);
-                if (data == *leaf) {
-                    return root;
-                } else {
-                    if ((level + 1) % PERIOD == 0) {
-                        throw std::runtime_error("rehash not ready!");
+                auto old_leaf = std::get<INDEX_LEAF>(*vp);
+                if (leaf.first == old_leaf->first) {
+                    if (leaf.second == old_leaf->second) {
+                        return root;
+                    } else {
+                        return root->set(bits, std::make_shared<Leaf>(leaf));
                     }
-                    auto p = merge(leaf, Hasher()(*leaf), std::make_shared<Leaf>(data), hashcode, level + 1);
-                    std::vector< VariantPtr > elements(root->elements);
-                    elements[root->InnerIndex(bits)] = p;
-                    return std::make_shared<Node>(root->bitmap, std::move(elements));
+                } else {
+                    size_t old_leaf_hash = Hasher()(old_leaf->first, (level + 1) / PERIOD);
+                    if ((level + 1) % PERIOD == 0) {
+                        hashcode = Hasher()(leaf.first, (level + 1) / PERIOD);
+                    }
+                    auto p = merge(old_leaf, old_leaf_hash, std::make_shared<Leaf>(leaf), hashcode, level + 1);
+                    return root->set(bits, p);
                 }
             }
         }
     }
 
-    static NodePtr insert(NodePtr root, const T & data) {
-        return insert(root, data, Hasher()(data), 0);
+    static NodePtr insert(NodePtr root, const K & key, const V & value) {
+        return insert(root, std::make_pair(key, value), Hasher()(key, 0), 0);
     }
 
     static void toDot(NodePtr root, std::ostream & os) {
@@ -225,11 +255,11 @@ struct CHAMT {
         return ss.str();
     }
 
-
     static std::string _toDot(VariantPtr root, std::ostream & os) {
         if (root.index() == INDEX_LEAF) {
             std::stringstream ss;
-            ss << "value_" << *(std::get<INDEX_LEAF>(root));
+            const auto & leaf = *(std::get<INDEX_LEAF>(root));
+            ss << "leaf_" << leaf.first << '_' << leaf.second;
             return ss.str();
         } else {
             auto p = std::get<INDEX_NODE>(root);
@@ -260,28 +290,11 @@ struct CHAMT {
 
 #include <string>
 
-struct StringRehasher {
-    size_t operator()(const std::string & s, size_t n) {
-        std::string t(s.size() + 2 * sizeof(n), '\0');
-        memcpy(t.data(), &n, sizeof(n));
-        memcpy(t.data() + sizeof(n), s.data(), s.size());
-        memcpy(t.data() + sizeof(n) + s.size(), &n, sizeof(n));
-        return std::hash<std::string>()(t);
-    }
-};
-
-struct IntRehasher {
-    size_t operator()(int s, size_t n) {
-        return std::hash<int>()(s * n);
-    }
-};
-
-using IntSet = CHAMT<int, IntRehasher>;
-using StringSet = CHAMT<std::string, StringRehasher>;
 
 #include <map>
 #include <cassert>
 
+/*
 void print_hash_bits(const std::string & s) {
     size_t h = std::hash<std::string>()(s);
     for (size_t i = 0; i < PERIOD; ++i) {
@@ -289,47 +302,83 @@ void print_hash_bits(const std::string & s) {
     }
     std::cout << std::endl;
 }
+*/
 
-#define FOO 0
+void test_rehash() {
+    struct BadStringHasher {
+        size_t operator()(const std::string & s, size_t n) {
+            size_t sum = 0;
+            if (s.size() > 0) {
+                sum = s[0] * n;
+                for (char ch : s) {
+                    sum += ch;
+                }
+            }
+            return sum;
+        }
+    };
+
+    using StringMap = HAMTMap<std::string, int, BadStringHasher>;
+
+    auto p = StringMap::create();
+    p = StringMap::insert(p, "123", 1);
+    p = StringMap::insert(p, "321", 2);
+    p = StringMap::insert(p, "321", 2);
+    p = StringMap::insert(p, "321", 3);
+    {
+        auto r = StringMap::find(p, "123");
+        assert (r);
+        assert (*r == 1);
+    }
+    {
+        auto r = StringMap::find(p, "321");
+        assert (r);
+        assert (*r == 3);
+    }
+
+}
+
+void test_remove() {
+    struct GoodStringHasher {
+        size_t operator()(const std::string & s, size_t n) {
+            size_t hash = 7 + n;
+            for (char ch : s) {
+                hash = hash * (31 + n) + ch;
+            }
+            return hash;
+        }
+    };
+
+    using StringMap = HAMTMap<std::string, int, GoodStringHasher>;
+
+    auto p = StringMap::create();
+
+    const size_t limit = 1024;
+    for (int i = 0; i < limit; ++i) {
+        if (i % 2 == 0) {
+            p = StringMap::insert(p, std::to_string(i), i);
+        }
+    }
+    for (int i = 0; i < limit; ++i) {
+        if (i % 3 != 0) {
+            p = StringMap::remove(p, std::to_string(i));
+        }
+    }
+
+    StringMap::toDot(p, std::cout);
+
+    for (int i = 0; i < limit; ++i) {
+        const auto r = StringMap::find(p, std::to_string(i));
+        if (i % 2 == 0 && i % 3 == 0) {
+            assert ( r );
+            assert (*r == i);
+        } else {
+            assert ( !r );
+        }
+    }
+}
 
 int main() {
-    auto p = StringSet::create();
-
-#if FOO
-    for (int i = 0; i < 64; ++i) {
-        p = StringSet::insert(p, std::to_string(i));
-    }
-    for (int i = 0; i < 64; ++i) {
-        if (i % 2 == 0) {
-            p = StringSet::remove(p, std::to_string(i));
-        }
-    }
-
-#else
-    for (int i = 0; i < 64; ++i) {
-        if (i % 2) {
-            p = StringSet::insert(p, std::to_string(i));
-        }
-    }
-#endif
-    /*
-    for (int i = 0; i < 64; ++i) {
-        if( StringSet::find(p, std::to_string(i)) != (i % 2) ) {
-            std::cerr << i << std::endl;
-        }
-    }
-
-    p = StringSet::remove(p, std::to_string(43));
-    */
-    // p = StringSet::remove(p, std::to_string(51));
-
-
-    // std::cerr << StringSet::find(p, std::to_string(51));
-    /*
-    print_hash_bits(std::to_string(5));
-    print_hash_bits(std::to_string(43));
-    print_hash_bits(std::to_string(51));
-    */
-    StringSet::toDot(p, std::cout);
-
+    test_rehash();
+    test_remove();
 }
