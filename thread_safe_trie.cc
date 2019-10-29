@@ -106,6 +106,7 @@ struct trie {
     };
 
     using NodePtr = typename Node::NodePtr;
+    using DataPtr = typename Node::DataPtr;
 
     static NodePtr remove(NodePtr head, const std::string & key) {
         return remove(head, reinterpret_cast<const uint8_t *>(key.data()), key.size());
@@ -184,6 +185,28 @@ struct trie {
         }
     }
 
+    static std::vector<T> findPrefix(NodePtr head, const std::string & key) {
+        return findPrefix(head, reinterpret_cast<const uint8_t *>(key.data()), key.size());
+    }
+
+    static std::vector<T> findPrefix(NodePtr head, const uint8_t *key, size_t len) {
+        auto p = head;
+        std::vector<T> r;
+        for (size_t i = 0; i < len; ++i) {
+            if (!p) {
+                break;
+            }
+            if (p->data) {
+                r.push_back(*(p->data));
+            }
+            p = p->get(key[i]);
+        }
+        if (p && p->data) {
+            r.push_back(*(p->data));
+        }
+        return r;
+    }
+
     static void dump(NodePtr head) {
         std::cout << "digraph G {\n";
         dump_node(head);
@@ -215,7 +238,7 @@ struct trie {
     }
 };
 
-int main() {
+void test_remove() {
     using IntTrie = trie<int>;
     IntTrie::NodePtr p;
 
@@ -250,4 +273,46 @@ int main() {
         }
     }
     // IntTrie::dump(p);
+}
+
+template<typename T>
+bool vectorEqual(const std::vector<T> & a,const std::vector<T> & b) {
+    if (a.size() != b.size()) {
+        return false;
+    } 
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i] != b[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
+void test_prefix() {
+    using IntTrie = trie<int>;
+    IntTrie::NodePtr p;
+    p = IntTrie::insert(p, "123", 1);
+    p = IntTrie::insert(p, "12345", 2);
+    {
+        auto r = IntTrie::findPrefix(p, "123");
+        assert ( vectorEqual(r, std::vector<int>{1}) );
+    }
+    {
+        auto r = IntTrie::findPrefix(p, "1234");
+        assert ( vectorEqual(r, std::vector<int>{1}) );
+    }
+    {
+        auto r = IntTrie::findPrefix(p, "12345");
+        assert ( vectorEqual(r, std::vector<int>{1, 2}) );
+    }
+    {
+        auto r = IntTrie::findPrefix(p, "123456");
+        assert ( vectorEqual(r, std::vector<int>{1, 2}) );
+    }
+}
+
+int main() {
+    test_prefix();
+    test_remove();
 }
