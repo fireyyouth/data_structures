@@ -7,7 +7,7 @@
 #include <sstream>
 #include <cassert>
 
-template <typename K, typename V, typename KeyExtractor, typename Hasher>
+template <typename K, typename V, typename KeyExtractor, typename Hasher, typename Comp = std::equal_to<K>>
 struct HAMT {
     struct Node;
     using Leaf = V;
@@ -101,7 +101,7 @@ struct HAMT {
             auto vp = p->get(bits);
             if (vp) {
                 if (vp->index() == INDEX_LEAF) {
-                    if (key == KeyExtractor()(*std::get<INDEX_LEAF>(*vp))) {
+                    if (Comp()(key, KeyExtractor()(*std::get<INDEX_LEAF>(*vp)))) {
                         return *std::get<INDEX_LEAF>(*vp);
                     } else {
                         return std::nullopt;
@@ -138,7 +138,7 @@ struct HAMT {
                 auto vp = p->get(bits);
                 if (vp) {
                     if (vp->index() == INDEX_LEAF) {
-                        if (key == KeyExtractor()(*std::get<INDEX_LEAF>(*vp))) {
+                        if (Comp()(key, KeyExtractor()(*std::get<INDEX_LEAF>(*vp)))) {
                             removed = true;
                             break;
                         }
@@ -217,12 +217,8 @@ struct HAMT {
                 return root->set(bits, p);
             } else {
                 auto old_leaf = std::get<INDEX_LEAF>(*vp);
-                if (KeyExtractor()(leaf) == KeyExtractor()(*old_leaf)) {
-                    if (leaf == *old_leaf) {
-                        return root;
-                    } else {
-                        return root->set(bits, std::make_shared<Leaf>(leaf));
-                    }
+                if (Comp()(KeyExtractor()(leaf), KeyExtractor()(*old_leaf))) {
+                    return root->set(bits, std::make_shared<Leaf>(leaf));
                 } else {
                     size_t old_leaf_hash = Hasher()(KeyExtractor()(*old_leaf), (level + 1) / PERIOD);
                     if ((level + 1) % PERIOD == 0) {
@@ -288,7 +284,7 @@ struct HAMT {
     }
 };
 
-template <typename K, typename V, typename Hasher>
+template <typename K, typename V, typename Hasher, typename Comp = std::equal_to<K>>
 struct HAMTMap {
     using Pair = std::pair<K, V>;
     struct GetFirst {
@@ -296,7 +292,7 @@ struct HAMTMap {
             return p.first;
         }
     };
-    using Impl = HAMT<K, Pair, GetFirst, Hasher>;
+    using Impl = HAMT<K, Pair, GetFirst, Hasher, Comp>;
     using NodePtr = typename Impl::NodePtr;
     static std::optional<V> find(NodePtr p, const K & key) {
         const auto & r = Impl::find(p, key);
@@ -323,14 +319,14 @@ struct HAMTMap {
 };
 
 
-template <typename V, typename Hasher>
+template <typename V, typename Hasher, typename Comp = std::equal_to<V>>
 struct HAMTSet {
     struct Identity {
         V operator()(const V & v) {
             return v;
         }
     };
-    using Impl = HAMT<V, V, Identity, Hasher>;
+    using Impl = HAMT<V, V, Identity, Hasher, Comp>;
     using NodePtr = typename Impl::NodePtr;
     static std::optional<V> find(NodePtr p, const V & key) {
         return Impl::find(p, key);
