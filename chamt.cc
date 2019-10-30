@@ -385,8 +385,8 @@ struct HAMTSet {
         return Impl::create();
     }
 
-    static size_t size() {
-        return Impl::size();
+    static size_t size(const HAMTSetPtr & p) {
+        return Impl::size(p);
     }
 };
 
@@ -534,6 +534,7 @@ void test_set() {
 
     auto p = StringSet::create();
 
+    assert (StringSet::size(p) == 0);
     const size_t limit = 1024;
     for (int i = 0; i < limit; ++i) {
         if (i % 2 == 0) {
