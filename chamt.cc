@@ -7,12 +7,13 @@
 #include <sstream>
 #include <cassert>
 
-template <typename K, typename Value, typename KeyExtractor, typename Hasher, typename Comp = std::equal_to<K>>
+template <typename Value, typename KeyExtractor, typename Hasher, typename Comp = std::equal_to<std::invoke_result_t<KeyExtractor, Value>>>
 class HAMT {
 public:
     using HAMTPtr = std::shared_ptr<const HAMT>;
     using ValuePtr = std::shared_ptr<const Value>;
 private:
+    using K = std::invoke_result_t<KeyExtractor, Value>;
     struct Node;
     using NodePtr = std::shared_ptr<const Node>;
     enum {
@@ -329,7 +330,7 @@ struct HAMTMap {
             return p.first;
         }
     };
-    using Impl = HAMT<K, Pair, GetFirst, Hasher, Comp>;
+    using Impl = HAMT<Pair, GetFirst, Hasher, Comp>;
     using HAMTMapPtr = typename Impl::HAMTPtr;
     using ValuePtr = typename Impl::ValuePtr;
 
@@ -374,7 +375,7 @@ struct HAMTSet {
             return v;
         }
     };
-    using Impl = HAMT<V, V, Identity, Hasher, Comp>;
+    using Impl = HAMT<V, Identity, Hasher, Comp>;
     using HAMTSetPtr = typename Impl::HAMTPtr;
     using ValuePtr = typename Impl::ValuePtr;
     static std::optional<V> find(const HAMTSetPtr & p, const V & key) {
