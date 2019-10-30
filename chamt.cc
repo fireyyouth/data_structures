@@ -247,7 +247,19 @@ public:
         }
     }
 
-    static std::pair<HAMTPtr, ValuePtr> insert(const HAMTPtr & hamt, const Value & value) {
+
+    static HAMTPtr insert(const HAMTPtr & hamt, const Value & value) {
+        auto leaf = std::make_shared<Value>(value);
+        bool replaced = false;
+        const auto & root = insert(hamt->root_, leaf, Hasher()(KeyExtractor()(value), 0), 0, replaced);
+        size_t size = hamt->size_;
+        if (!replaced) {
+            ++size;
+        }
+        return std::make_shared<HAMT>(root, size);
+    }
+
+    static std::pair<HAMTPtr, ValuePtr> insert_return_value(const HAMTPtr & hamt, const Value & value) {
         auto leaf = std::make_shared<Value>(value);
         bool replaced = false;
         const auto & root = insert(hamt->root_, leaf, Hasher()(KeyExtractor()(value), 0), 0, replaced);
@@ -334,8 +346,12 @@ struct HAMTMap {
         return Impl::size(p);
     }
 
-    static std::pair<HAMTMapPtr, ValuePtr> insert(const HAMTMapPtr & p, const K & key, const V & value) {
+    static HAMTMapPtr insert(const HAMTMapPtr & p, const K & key, const V & value) {
         return Impl::insert(p, std::make_pair(key, value));
+    }
+
+    static std::pair<HAMTMapPtr, ValuePtr> insert_return_value(const HAMTMapPtr & p, const K & key, const V & value) {
+        return Impl::insert_return_value(p, std::make_pair(key, value));
     }
 
     static HAMTMapPtr remove(const HAMTMapPtr & p, const K & key) {
@@ -370,8 +386,12 @@ struct HAMTSet {
         }
     }
 
-    static std::pair<HAMTSetPtr, ValuePtr> insert(const HAMTSetPtr & root, const V & key) {
-        return Impl::insert(root, key);
+    static HAMTSetPtr insert(const HAMTSetPtr & p, const V & key) {
+        return Impl::insert(p, key);
+    }
+
+    static std::pair<HAMTSetPtr, ValuePtr> insert_return_value(const HAMTSetPtr & root, const V & key) {
+        return Impl::insert_return_value(root, key);
     }
 
     static HAMTSetPtr remove(const HAMTSetPtr & root, const V & key) {
@@ -425,31 +445,19 @@ void test_rehash() {
 
     auto p = StringMap::create();
 
-    {
-        const auto & r = StringMap::insert(p, "123", 1);
-        p = r.first;
-    }
+    p = StringMap::insert(p, "123", 1);
 
     assert(StringMap::size(p) ==  1);
 
-    {
-        const auto & r = StringMap::insert(p, "321", 2);
-        p = r.first;
-    }
+    p = StringMap::insert(p, "321", 2);
 
     assert(StringMap::size(p) ==  2);
 
-    {
-        const auto & r = StringMap::insert(p, "321", 2);
-        p = r.first;
-    }
+    p = StringMap::insert(p, "321", 2);
 
     assert(StringMap::size(p) ==  2);
 
-    {
-        const auto & r = StringMap::insert(p, "321", 3);
-        p = r.first;
-    }
+    p = StringMap::insert(p, "321", 3);
 
     assert(StringMap::size(p) ==  2);
 
@@ -496,8 +504,7 @@ void test_remove() {
     const size_t limit = 1024;
     for (int i = 0; i < limit; ++i) {
         if (i % 2 == 0) {
-            const auto & r = StringMap::insert(p, std::to_string(i), i);
-            p = r.first;
+            p = StringMap::insert(p, std::to_string(i), i);
         }
     }
     for (int i = 0; i < limit; ++i) {
@@ -538,8 +545,7 @@ void test_set() {
     const size_t limit = 1024;
     for (int i = 0; i < limit; ++i) {
         if (i % 2 == 0) {
-            const auto & r = StringSet::insert(p, std::to_string(i));
-            p = r.first;
+            p = StringSet::insert(p, std::to_string(i));
         }
     }
     for (int i = 0; i < limit; ++i) {
