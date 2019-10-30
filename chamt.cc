@@ -271,6 +271,27 @@ public:
         return std::make_pair(std::make_shared<HAMT>(root, size), leaf);
     }
 
+    template <typename Callable>
+    static void for_each(const NodePtr & root, const Callable & callback) {
+        uint64_t bitmap = root->bitmap;
+        while (bitmap) {
+            int k = __builtin_ctzll(bitmap);
+            const auto & p = root->get(k);
+            assert (p);
+            if (p->index() == INDEX_LEAF) {
+                callback(*std::get<INDEX_LEAF>(*p));
+            } else {
+                for_each(std::get<INDEX_NODE>(*p), callback);
+            }
+            bitmap = bitmap & (bitmap - 1);
+        }
+    }
+
+    template <typename Callable>
+    static void for_each(const HAMTPtr & hamt, const Callable & callback) {
+        for_each(hamt->root_, callback);
+    }
+
     /*
     static void toDot(NodePtr root, std::ostream & os) {
         os << "digraph {\n"
@@ -365,6 +386,11 @@ struct HAMTMap {
     static HAMTMapPtr create() {
         return Impl::create();
     }
+    
+    template <typename Callable>
+    static void for_each(const HAMTMapPtr & hamt, const Callable & callback) {
+        Impl::for_each(hamt, callback);
+    }
 };
 
 
@@ -414,7 +440,7 @@ struct HAMTSet {
 
 #include <string>
 
-
+#include <set>
 #include <map>
 #include <cassert>
 
@@ -472,6 +498,14 @@ void test_rehash() {
         assert (r);
         assert (*r == 3);
     }
+
+    std::set< std::pair<std::string, int> > x;
+    StringMap::for_each(p, [&x](const std::pair<std::string, int> & item){
+        x.emplace(item);
+    });
+    std::set< std::pair<std::string, int> > expect = {{"123", 1}, {"321", 3}};
+    
+    assert(x == expect);
 
     p = StringMap::remove(p, "321");
 
@@ -567,6 +601,7 @@ void test_set() {
         }
     }
 }
+
 int main() {
     test_rehash();
     test_remove();
