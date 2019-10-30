@@ -361,7 +361,7 @@ struct HAMTSet {
     using Impl = HAMT<V, V, Identity, Hasher, Comp>;
     using HAMTSetPtr = typename Impl::HAMTPtr;
     using ValuePtr = typename Impl::ValuePtr;
-    static std::optional<V> find(HAMTSetPtr p, const V & key) {
+    static std::optional<V> find(const HAMTSetPtr & p, const V & key) {
         const auto & r = Impl::find(p, key);
         if (r) {
             return *r;
@@ -370,11 +370,11 @@ struct HAMTSet {
         }
     }
 
-    static std::pair<HAMTSetPtr, ValuePtr> insert(HAMTSetPtr root, const V & key) {
+    static std::pair<HAMTSetPtr, ValuePtr> insert(const HAMTSetPtr & root, const V & key) {
         return Impl::insert(root, key);
     }
 
-    static HAMTSetPtr remove(HAMTSetPtr root, const V & key) {
+    static HAMTSetPtr remove(const HAMTSetPtr & root, const V & key) {
         return Impl::remove(root, key);
     }
     /*
