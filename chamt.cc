@@ -7,7 +7,14 @@
 #include <sstream>
 #include <cassert>
 
-template <typename Value, typename KeyExtractor, typename Hasher, typename Comp = std::equal_to<std::invoke_result_t<KeyExtractor, Value>>>
+template <
+    typename Value,
+    typename KeyExtractor,
+    typename Hasher,
+    typename Comp = std::equal_to<
+        std::invoke_result_t<KeyExtractor, Value &>
+    >
+>
 class HAMT {
 public:
     using Pointer = std::shared_ptr<const HAMT>;
@@ -248,6 +255,16 @@ public:
         }
     }
 
+    static Pointer insert(const Pointer & hamt, Value && value) {
+        auto leaf = std::make_shared<Value>(std::move(value));
+        bool replaced = false;
+        const auto & root = insert(hamt->root_, leaf, Hasher()(KeyExtractor()(*leaf), 0), 0, replaced);
+        size_t size = hamt->size_;
+        if (!replaced) {
+            ++size;
+        }
+        return std::make_shared<HAMT>(root, size);
+    }
 
     static Pointer insert(const Pointer & hamt, const Value & value) {
         auto leaf = std::make_shared<Value>(value);
@@ -292,14 +309,13 @@ public:
         for_each(hamt->root_, callback);
     }
 
-    /*
-    static void toDot(NodePtr root, std::ostream & os) {
+    static void toDot(const Pointer & hamt, std::ostream & os) {
         os << "digraph {\n"
           "graph [pad=\"0.5\", nodesep=\"0.5\", ranksep=\"2\"];\n"
           "node [shape=plain]\n"
           "rankdir=LR;\n\n";
 
-        _toDot(root, os);
+        _toDot(hamt->root_, os);
         os << "}\n";
     }
 
@@ -340,14 +356,13 @@ public:
             return parent_name;
         }
     }
-    */
 };
 
 template <typename K, typename V, typename Hasher, typename Comp = std::equal_to<K>>
 struct HAMTMap {
     using Pair = std::pair<K, V>;
     struct GetFirst {
-        K operator()(const Pair & p) {
+        const K & operator()(const Pair & p) {
             return p.first;
         }
     };
@@ -355,17 +370,16 @@ struct HAMTMap {
     using Pointer = typename Impl::Pointer;
     using ValuePtr = typename Impl::ValuePtr;
 
-    static std::optional<V> find(const Pointer & p, const K & key) {
-        const auto & r = Impl::find(p, key);
-        if (!r) {
-            return std::nullopt;
-        } else {
-            return r->second;
-        }
+    static ValuePtr find(const Pointer & p, const K & key) {
+        return Impl::find(p, key);
     }
 
     static size_t size(const Pointer & p) {
         return Impl::size(p);
+    }
+
+    static Pointer insert(const Pointer & p, const K & key, V && value) {
+        return Impl::insert(p, std::make_pair(key, std::move(value)));
     }
 
     static Pointer insert(const Pointer & p, const K & key, const V & value) {
@@ -391,26 +405,29 @@ struct HAMTMap {
     static void for_each(const Pointer & hamt, const Callable & callback) {
         Impl::for_each(hamt, callback);
     }
+    static void toDot(const Pointer & hamt, std::ostream & os) {
+        Impl::toDot(hamt, os);
+    }
 };
 
 
 template <typename V, typename Hasher, typename Comp = std::equal_to<V>>
 struct HAMTSet {
     struct Identity {
-        V operator()(const V & v) {
+        const V & operator()(const V & v) {
             return v;
         }
     };
     using Impl = HAMT<V, Identity, Hasher, Comp>;
     using Pointer = typename Impl::Pointer;
     using ValuePtr = typename Impl::ValuePtr;
-    static std::optional<V> find(const Pointer & p, const V & key) {
-        const auto & r = Impl::find(p, key);
-        if (r) {
-            return *r;
-        } else {
-            return std::nullopt;
-        }
+
+    static ValuePtr find(const Pointer & p, const V & key) {
+        return Impl::find(p, key);
+    }
+
+    static Pointer insert(const Pointer & p, V && key) {
+        return Impl::insert(p, std::move(key));
     }
 
     static Pointer insert(const Pointer & p, const V & key) {
@@ -487,16 +504,17 @@ void test_rehash() {
     p = StringMap::insert(p, "321", 3);
 
     assert(StringMap::size(p) ==  2);
-
+    
+    // StringMap::toDot(p, std::cout);
     {
         auto r = StringMap::find(p, "123");
         assert (r);
-        assert (*r == 1);
+        assert (r->second == 1);
     }
     {
         auto r = StringMap::find(p, "321");
         assert (r);
-        assert (*r == 3);
+        assert (r->second == 3);
     }
 
     std::set< std::pair<std::string, int> > x;
@@ -518,7 +536,6 @@ void test_rehash() {
     p = StringMap::remove(p, "123");
 
     assert(StringMap::size(p) ==  0);
-
 }
 
 void test_remove() {
@@ -554,7 +571,7 @@ void test_remove() {
         const auto r = StringMap::find(p, std::to_string(i));
         if (i % 2 == 0 && i % 3 == 0) {
             assert ( r );
-            assert (*r == i);
+            assert (r->second == i);
         } else {
             assert ( !r );
         }
@@ -601,9 +618,49 @@ void test_set() {
         }
     }
 }
+struct Data {
+    int key;
+    std::unique_ptr<int> value;
+    Data(int k, int v) : key(k), value(std::make_unique<int>(v)) {}
+    Data(const Data & other) = delete;
+    Data & operator=(const Data & other) = delete;
+    Data(Data && other) = default;
+    Data & operator=(Data && other) = default;
+};
 
+bool operator==(const Data & a, const Data & b) {
+    return b.key == a.key;
+}
+
+void test_move() {
+    
+
+    struct DataHasher {
+        size_t operator()(const Data & d, size_t n) {
+            return d.key;
+        }
+    };
+
+    using DataSet = HAMTSet<Data, DataHasher>;
+
+    auto p = DataSet::create();
+
+    Data a(1, 1);
+
+    p = DataSet::insert(p, std::move(a));
+
+    assert( a.value == nullptr );
+    
+    const auto & r = DataSet::find(p, a);
+    
+    assert (r);
+    assert(r->value);
+    assert(*(r->value) == 1);
+}
+   
 int main() {
     test_rehash();
     test_remove();
     test_set();
+    test_move();
 }
