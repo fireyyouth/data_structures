@@ -7,11 +7,13 @@
 #include <sstream>
 #include <cassert>
 
-template <typename K, typename V, typename KeyExtractor, typename Hasher, typename Comp = std::equal_to<K>>
-struct HAMT {
-    struct Node;
-    using Value = V;
+template <typename K, typename Value, typename KeyExtractor, typename Hasher, typename Comp = std::equal_to<K>>
+class HAMT {
+public:
+    using HAMTPtr = std::shared_ptr<const HAMT>;
     using ValuePtr = std::shared_ptr<const Value>;
+private:
+    struct Node;
     using NodePtr = std::shared_ptr<const Node>;
     enum {
         INDEX_LEAF = 0,
@@ -89,11 +91,23 @@ struct HAMT {
     };
 
 
-    static NodePtr create() {
-        return std::make_shared<Node>();
+    NodePtr root_;
+    size_t size_;
+
+public:
+    HAMT() : root_(std::make_shared<Node>()), size_(0) {}
+    HAMT(const NodePtr & r, size_t s) : root_(r), size_(s) {}
+
+    static HAMTPtr create() {
+        return std::make_shared<HAMT>();
     }
 
-    static std::optional<V> find(NodePtr p, const K & key) {
+    static size_t size(const HAMTPtr & hamt) {
+        return hamt->size_;
+    }
+
+    static ValuePtr find(const HAMTPtr & hamt, const K & key) {
+        auto p = hamt->root_;
         size_t hashcode = Hasher()(key, 0);
         size_t level = 0;
         while (1) {
@@ -102,15 +116,15 @@ struct HAMT {
             if (vp) {
                 if (vp->index() == INDEX_LEAF) {
                     if (Comp()(key, KeyExtractor()(*std::get<INDEX_LEAF>(*vp)))) {
-                        return *std::get<INDEX_LEAF>(*vp);
+                        return std::get<INDEX_LEAF>(*vp);
                     } else {
-                        return std::nullopt;
+                        return nullptr;
                     }
                 } else {
                     p = std::get<INDEX_NODE>(*vp);
                 }
             } else {
-                return std::nullopt;
+                return nullptr;
             }
             ++level;
             if (level % PERIOD == 0) {
@@ -119,7 +133,7 @@ struct HAMT {
         }
     }
 
-    static NodePtr remove(NodePtr root, const K & key) {
+    static HAMTPtr remove(const HAMTPtr & hamt, const K & key) {
         struct Frame {
             NodePtr node;
             size_t bits;
@@ -129,7 +143,7 @@ struct HAMT {
         bool removed = false;
 
         {
-            auto p = root;
+            auto p = hamt->root_;
             size_t hashcode = Hasher()(key, 0);
             size_t level = 0;
             while (1) {
@@ -175,9 +189,9 @@ struct HAMT {
                 p = stack.back().node->set(stack.back().bits, p);
                 stack.pop_back();
             }
-            return p;
+            return std::make_shared<HAMT>(p, hamt->size_ - 1);
         } else {
-            return root;
+            return hamt;
         }
     }
 
@@ -203,9 +217,10 @@ struct HAMT {
         }
     }
 
-    static NodePtr insert(const NodePtr & root, const ValuePtr & leaf, size_t hashcode, size_t level) {
+    static NodePtr insert(const NodePtr & root, const ValuePtr & leaf, size_t hashcode, size_t level, bool & replaced) {
         size_t bits = gitBits(hashcode, level);
         auto vp = root->get(bits);
+
         if (!vp) {
             return root->set(bits, leaf);
         } else {
@@ -213,11 +228,12 @@ struct HAMT {
                 if ((level + 1) % PERIOD == 0) {
                     hashcode = Hasher()(KeyExtractor()(*leaf), (level + 1) / PERIOD);
                 }
-                auto p = insert(std::get<INDEX_NODE>(*vp), leaf, hashcode, level + 1);
+                auto p = insert(std::get<INDEX_NODE>(*vp), leaf, hashcode, level + 1, replaced);
                 return root->set(bits, p);
             } else {
                 auto old_leaf = std::get<INDEX_LEAF>(*vp);
                 if (Comp()(KeyExtractor()(*leaf), KeyExtractor()(*old_leaf))) {
+                    replaced = true;
                     return root->set(bits, leaf);
                 } else {
                     size_t old_leaf_hash = Hasher()(KeyExtractor()(*old_leaf), (level + 1) / PERIOD);
@@ -231,11 +247,18 @@ struct HAMT {
         }
     }
 
-    static std::pair<NodePtr, ValuePtr> insert(NodePtr root, const V & value) {
+    static std::pair<HAMTPtr, ValuePtr> insert(const HAMTPtr & hamt, const Value & value) {
         auto leaf = std::make_shared<Value>(value);
-        return std::make_pair(insert(root, leaf, Hasher()(KeyExtractor()(value), 0), 0), leaf);
+        bool replaced = false;
+        const auto & root = insert(hamt->root_, leaf, Hasher()(KeyExtractor()(value), 0), 0, replaced);
+        size_t size = hamt->size_;
+        if (!replaced) {
+            ++size;
+        }
+        return std::make_pair(std::make_shared<HAMT>(root, size), leaf);
     }
 
+    /*
     static void toDot(NodePtr root, std::ostream & os) {
         os << "digraph {\n"
           "graph [pad=\"0.5\", nodesep=\"0.5\", ranksep=\"2\"];\n"
@@ -283,6 +306,7 @@ struct HAMT {
             return parent_name;
         }
     }
+    */
 };
 
 template <typename K, typename V, typename Hasher, typename Comp = std::equal_to<K>>
@@ -294,9 +318,10 @@ struct HAMTMap {
         }
     };
     using Impl = HAMT<K, Pair, GetFirst, Hasher, Comp>;
-    using NodePtr = typename Impl::NodePtr;
+    using HAMTMapPtr = typename Impl::HAMTPtr;
     using ValuePtr = typename Impl::ValuePtr;
-    static std::optional<V> find(NodePtr p, const K & key) {
+
+    static std::optional<V> find(const HAMTMapPtr & p, const K & key) {
         const auto & r = Impl::find(p, key);
         if (!r) {
             return std::nullopt;
@@ -305,17 +330,22 @@ struct HAMTMap {
         }
     }
 
-    static std::pair<NodePtr, ValuePtr> insert(NodePtr root, const K & key, const V & value) {
-        return Impl::insert(root, std::make_pair(key, value));
+    static size_t size(const HAMTMapPtr & p) {
+        return Impl::size(p);
     }
 
-    static NodePtr remove(NodePtr root, const K & key) {
-        return Impl::remove(root, key);
+    static std::pair<HAMTMapPtr, ValuePtr> insert(const HAMTMapPtr & p, const K & key, const V & value) {
+        return Impl::insert(p, std::make_pair(key, value));
     }
-    static void toDot(NodePtr root, std::ostream & os) {
+
+    static HAMTMapPtr remove(const HAMTMapPtr & p, const K & key) {
+        return Impl::remove(p, key);
+    }
+    /*
+    static void toDot(HAMTMapPtr root, std::ostream & os) {
         Impl::toDot(root, os);
-    }
-    static NodePtr create() {
+    }*/
+    static HAMTMapPtr create() {
         return Impl::create();
     }
 };
@@ -329,24 +359,34 @@ struct HAMTSet {
         }
     };
     using Impl = HAMT<V, V, Identity, Hasher, Comp>;
-    using NodePtr = typename Impl::NodePtr;
+    using HAMTSetPtr = typename Impl::HAMTPtr;
     using ValuePtr = typename Impl::ValuePtr;
-    static std::optional<V> find(NodePtr p, const V & key) {
-        return Impl::find(p, key);
+    static std::optional<V> find(HAMTSetPtr p, const V & key) {
+        const auto & r = Impl::find(p, key);
+        if (r) {
+            return *r;
+        } else {
+            return std::nullopt;
+        }
     }
 
-    static std::pair<NodePtr, ValuePtr> insert(NodePtr root, const V & key) {
+    static std::pair<HAMTSetPtr, ValuePtr> insert(HAMTSetPtr root, const V & key) {
         return Impl::insert(root, key);
     }
 
-    static NodePtr remove(NodePtr root, const V & key) {
+    static HAMTSetPtr remove(HAMTSetPtr root, const V & key) {
         return Impl::remove(root, key);
     }
-    static void toDot(NodePtr root, std::ostream & os) {
+    /*
+    static void toDot(HAMTSetPtr root, std::ostream & os) {
         Impl::toDot(root, os);
-    }
-    static NodePtr create() {
+    }*/
+    static HAMTSetPtr create() {
         return Impl::create();
+    }
+
+    static size_t size() {
+        return Impl::size();
     }
 };
 
@@ -384,22 +424,34 @@ void test_rehash() {
     using StringMap = HAMTMap<std::string, int, BadStringHasher>;
 
     auto p = StringMap::create();
+
     {
         const auto & r = StringMap::insert(p, "123", 1);
         p = r.first;
     }
+
+    assert(StringMap::size(p) ==  1);
+
     {
         const auto & r = StringMap::insert(p, "321", 2);
         p = r.first;
     }
+
+    assert(StringMap::size(p) ==  2);
+
     {
         const auto & r = StringMap::insert(p, "321", 2);
         p = r.first;
     }
+
+    assert(StringMap::size(p) ==  2);
+
     {
         const auto & r = StringMap::insert(p, "321", 3);
         p = r.first;
     }
+
+    assert(StringMap::size(p) ==  2);
 
     {
         auto r = StringMap::find(p, "123");
@@ -411,6 +463,18 @@ void test_rehash() {
         assert (r);
         assert (*r == 3);
     }
+
+    p = StringMap::remove(p, "321");
+
+    assert(StringMap::size(p) ==  1);
+
+    p = StringMap::remove(p, "321");
+
+    assert(StringMap::size(p) ==  1);
+
+    p = StringMap::remove(p, "123");
+
+    assert(StringMap::size(p) ==  0);
 
 }
 
@@ -442,7 +506,7 @@ void test_remove() {
         }
     }
 
-    StringMap::toDot(p, std::cout);
+    // StringMap::toDot(p, std::cout);
 
     for (int i = 0; i < limit; ++i) {
         const auto r = StringMap::find(p, std::to_string(i));
@@ -483,7 +547,7 @@ void test_set() {
         }
     }
 
-    StringSet::toDot(p, std::cout);
+    // StringSet::toDot(p, std::cout);
 
     for (int i = 0; i < limit; ++i) {
         const auto r = StringSet::find(p, std::to_string(i));
