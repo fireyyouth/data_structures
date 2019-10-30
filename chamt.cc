@@ -10,7 +10,7 @@
 template <typename Value, typename KeyExtractor, typename Hasher, typename Comp = std::equal_to<std::invoke_result_t<KeyExtractor, Value>>>
 class HAMT {
 public:
-    using HAMTPtr = std::shared_ptr<const HAMT>;
+    using Pointer = std::shared_ptr<const HAMT>;
     using ValuePtr = std::shared_ptr<const Value>;
 private:
     using K = std::invoke_result_t<KeyExtractor, Value>;
@@ -99,15 +99,15 @@ public:
     HAMT() : root_(std::make_shared<Node>()), size_(0) {}
     HAMT(const NodePtr & r, size_t s) : root_(r), size_(s) {}
 
-    static HAMTPtr create() {
+    static Pointer create() {
         return std::make_shared<HAMT>();
     }
 
-    static size_t size(const HAMTPtr & hamt) {
+    static size_t size(const Pointer & hamt) {
         return hamt->size_;
     }
 
-    static ValuePtr find(const HAMTPtr & hamt, const K & key) {
+    static ValuePtr find(const Pointer & hamt, const K & key) {
         auto p = hamt->root_;
         size_t hashcode = Hasher()(key, 0);
         size_t level = 0;
@@ -134,7 +134,7 @@ public:
         }
     }
 
-    static HAMTPtr remove(const HAMTPtr & hamt, const K & key) {
+    static Pointer remove(const Pointer & hamt, const K & key) {
         struct Frame {
             NodePtr node;
             size_t bits;
@@ -249,7 +249,7 @@ public:
     }
 
 
-    static HAMTPtr insert(const HAMTPtr & hamt, const Value & value) {
+    static Pointer insert(const Pointer & hamt, const Value & value) {
         auto leaf = std::make_shared<Value>(value);
         bool replaced = false;
         const auto & root = insert(hamt->root_, leaf, Hasher()(KeyExtractor()(value), 0), 0, replaced);
@@ -260,7 +260,7 @@ public:
         return std::make_shared<HAMT>(root, size);
     }
 
-    static std::pair<HAMTPtr, ValuePtr> insert_return_value(const HAMTPtr & hamt, const Value & value) {
+    static std::pair<Pointer, ValuePtr> insert_return_value(const Pointer & hamt, const Value & value) {
         auto leaf = std::make_shared<Value>(value);
         bool replaced = false;
         const auto & root = insert(hamt->root_, leaf, Hasher()(KeyExtractor()(value), 0), 0, replaced);
@@ -288,7 +288,7 @@ public:
     }
 
     template <typename Callable>
-    static void for_each(const HAMTPtr & hamt, const Callable & callback) {
+    static void for_each(const Pointer & hamt, const Callable & callback) {
         for_each(hamt->root_, callback);
     }
 
@@ -352,10 +352,10 @@ struct HAMTMap {
         }
     };
     using Impl = HAMT<Pair, GetFirst, Hasher, Comp>;
-    using HAMTMapPtr = typename Impl::HAMTPtr;
+    using Pointer = typename Impl::Pointer;
     using ValuePtr = typename Impl::ValuePtr;
 
-    static std::optional<V> find(const HAMTMapPtr & p, const K & key) {
+    static std::optional<V> find(const Pointer & p, const K & key) {
         const auto & r = Impl::find(p, key);
         if (!r) {
             return std::nullopt;
@@ -364,31 +364,31 @@ struct HAMTMap {
         }
     }
 
-    static size_t size(const HAMTMapPtr & p) {
+    static size_t size(const Pointer & p) {
         return Impl::size(p);
     }
 
-    static HAMTMapPtr insert(const HAMTMapPtr & p, const K & key, const V & value) {
+    static Pointer insert(const Pointer & p, const K & key, const V & value) {
         return Impl::insert(p, std::make_pair(key, value));
     }
 
-    static std::pair<HAMTMapPtr, ValuePtr> insert_return_value(const HAMTMapPtr & p, const K & key, const V & value) {
+    static std::pair<Pointer, ValuePtr> insert_return_value(const Pointer & p, const K & key, const V & value) {
         return Impl::insert_return_value(p, std::make_pair(key, value));
     }
 
-    static HAMTMapPtr remove(const HAMTMapPtr & p, const K & key) {
+    static Pointer remove(const Pointer & p, const K & key) {
         return Impl::remove(p, key);
     }
     /*
-    static void toDot(HAMTMapPtr root, std::ostream & os) {
+    static void toDot(Pointer root, std::ostream & os) {
         Impl::toDot(root, os);
     }*/
-    static HAMTMapPtr create() {
+    static Pointer create() {
         return Impl::create();
     }
     
     template <typename Callable>
-    static void for_each(const HAMTMapPtr & hamt, const Callable & callback) {
+    static void for_each(const Pointer & hamt, const Callable & callback) {
         Impl::for_each(hamt, callback);
     }
 };
@@ -402,9 +402,9 @@ struct HAMTSet {
         }
     };
     using Impl = HAMT<V, Identity, Hasher, Comp>;
-    using HAMTSetPtr = typename Impl::HAMTPtr;
+    using Pointer = typename Impl::Pointer;
     using ValuePtr = typename Impl::ValuePtr;
-    static std::optional<V> find(const HAMTSetPtr & p, const V & key) {
+    static std::optional<V> find(const Pointer & p, const V & key) {
         const auto & r = Impl::find(p, key);
         if (r) {
             return *r;
@@ -413,26 +413,26 @@ struct HAMTSet {
         }
     }
 
-    static HAMTSetPtr insert(const HAMTSetPtr & p, const V & key) {
+    static Pointer insert(const Pointer & p, const V & key) {
         return Impl::insert(p, key);
     }
 
-    static std::pair<HAMTSetPtr, ValuePtr> insert_return_value(const HAMTSetPtr & root, const V & key) {
+    static std::pair<Pointer, ValuePtr> insert_return_value(const Pointer & root, const V & key) {
         return Impl::insert_return_value(root, key);
     }
 
-    static HAMTSetPtr remove(const HAMTSetPtr & root, const V & key) {
+    static Pointer remove(const Pointer & root, const V & key) {
         return Impl::remove(root, key);
     }
     /*
-    static void toDot(HAMTSetPtr root, std::ostream & os) {
+    static void toDot(Pointer root, std::ostream & os) {
         Impl::toDot(root, os);
     }*/
-    static HAMTSetPtr create() {
+    static Pointer create() {
         return Impl::create();
     }
 
-    static size_t size(const HAMTSetPtr & p) {
+    static size_t size(const Pointer & p) {
         return Impl::size(p);
     }
 };
