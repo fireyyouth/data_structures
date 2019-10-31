@@ -1,3 +1,4 @@
+
 #include <memory>
 #include <variant>
 #include <optional>
@@ -12,7 +13,7 @@ template <
     typename KeyExtractor,
     typename Hasher,
     typename Comp = std::equal_to<
-        std::invoke_result_t<KeyExtractor, Value &>
+        std::invoke_result_t<KeyExtractor, Value>
     >
 >
 class HAMT {
@@ -280,7 +281,18 @@ public:
     static std::pair<Pointer, ValuePtr> insert_return_value(const Pointer & hamt, const Value & value) {
         auto leaf = std::make_shared<Value>(value);
         bool replaced = false;
-        const auto & root = insert(hamt->root_, leaf, Hasher()(KeyExtractor()(value), 0), 0, replaced);
+        const auto & root = insert(hamt->root_, leaf, Hasher()(KeyExtractor()(*leaf), 0), 0, replaced);
+        size_t size = hamt->size_;
+        if (!replaced) {
+            ++size;
+        }
+        return std::make_pair(std::make_shared<HAMT>(root, size), leaf);
+    }
+
+    static std::pair<Pointer, ValuePtr> insert_return_value(const Pointer & hamt, Value && value) {
+        auto leaf = std::make_shared<Value>(std::move(value));
+        bool replaced = false;
+        const auto & root = insert(hamt->root_, leaf, Hasher()(KeyExtractor()(*leaf), 0), 0, replaced);
         size_t size = hamt->size_;
         if (!replaced) {
             ++size;
@@ -438,13 +450,13 @@ struct HAMTSet {
         return Impl::insert_return_value(root, key);
     }
 
+    static std::pair<Pointer, ValuePtr> insert_return_value(const Pointer & root, V && key) {
+        return Impl::insert_return_value(root, std::move(key));
+    }
+
     static Pointer remove(const Pointer & root, const V & key) {
         return Impl::remove(root, key);
     }
-    /*
-    static void toDot(Pointer root, std::ostream & os) {
-        Impl::toDot(root, os);
-    }*/
     static Pointer create() {
         return Impl::create();
     }
@@ -452,8 +464,12 @@ struct HAMTSet {
     static size_t size(const Pointer & p) {
         return Impl::size(p);
     }
-};
 
+    template <typename Callable>
+    static void for_each(const Pointer & hamt, const Callable & callback) {
+        Impl::for_each(hamt, callback);
+    }
+};
 
 #include <string>
 
@@ -633,7 +649,6 @@ bool operator==(const Data & a, const Data & b) {
 }
 
 void test_move() {
-    
 
     struct DataHasher {
         size_t operator()(const Data & d, size_t n) {
